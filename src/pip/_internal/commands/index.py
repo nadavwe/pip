@@ -24,7 +24,7 @@ class IndexVersionsFinder:
         self.options = options
         target_python = cmdoptions.make_target_python(options)
         ignore_requires_python = options.ignore_requires_python
-        self.package_finder = self._build_package_finder(session, options, target_python, ignore_requires_python)
+        self.package_finder = self._build_package_finder(options, session, target_python, ignore_requires_python)
 
     @staticmethod
     def _build_package_finder(
@@ -54,7 +54,7 @@ class IndexVersionsFinder:
     def find_package_versions(self, package):
         versions: Iterable[Union[LegacyVersion, Version]] = (
             candidate.version
-            for candidate in self.finder.find_all_candidates(package)
+            for candidate in self.package_finder.find_all_candidates(package)
         )
 
         if not self.options.pre:
