@@ -19,6 +19,59 @@ from pip._internal.utils.misc import write_output
 logger = logging.getLogger(__name__)
 
 
+class IndexVersionsFinder:
+    def __init__(self, session, options):
+        self.options = options
+        target_python = cmdoptions.make_target_python(options)
+        ignore_requires_python = options.ignore_requires_python
+        self.package_finder = self._build_package_finder(session, options, target_python, ignore_requires_python)
+
+    @staticmethod
+    def _build_package_finder(
+            options: Values,
+            session: PipSession,
+            target_python: Optional[TargetPython] = None,
+            ignore_requires_python: Optional[bool] = None,
+    ) -> PackageFinder:
+        """
+        Create a package finder appropriate to the index command.
+        """
+        link_collector = LinkCollector.create(session, options=options)
+
+        # Pass allow_yanked=False to ignore yanked versions.
+        selection_prefs = SelectionPreferences(
+            allow_yanked=False,
+            allow_all_prereleases=options.pre,
+            ignore_requires_python=ignore_requires_python,
+        )
+
+        return PackageFinder.create(
+            link_collector=link_collector,
+            selection_prefs=selection_prefs,
+            target_python=target_python,
+        )
+
+    def find_package_versions(self, package):
+        versions: Iterable[Union[LegacyVersion, Version]] = (
+            candidate.version
+            for candidate in self.finder.find_all_candidates(package)
+        )
+
+        if not self.options.pre:
+            # Remove prereleases
+            versions = (version for version in versions
+                        if not version.is_prerelease)
+        versions = set(versions)
+
+        if not versions:
+            raise DistributionNotFound(
+                'No matching distribution found for {}'.format(package))
+
+        formatted_versions = [str(ver) for ver in sorted(
+            versions, reverse=True)]
+        return formatted_versions
+
+
 class IndexCommand(IndexGroupCommand):
     """
     Inspect information available from package indexes.
@@ -69,96 +122,36 @@ class IndexCommand(IndexGroupCommand):
 
         # Error handling happens here, not in the action-handlers.
         try:
-            handlers[action](options, args[1:])
+            with self._build_session(options) as session:
+                finder = IndexVersionsFinder(session, options)
+                handlers[action](finder, args[1:])
         except PipError as e:
             logger.error(e.args[0])
             return ERROR
 
         return SUCCESS
 
-    def _build_package_finder(
-            self,
-            options: Values,
-            session: PipSession,
-            target_python: Optional[TargetPython] = None,
-            ignore_requires_python: Optional[bool] = None,
-    ) -> PackageFinder:
-        """
-        Create a package finder appropriate to the index command.
-        """
-        link_collector = LinkCollector.create(session, options=options)
-
-        # Pass allow_yanked=False to ignore yanked versions.
-        selection_prefs = SelectionPreferences(
-            allow_yanked=False,
-            allow_all_prereleases=options.pre,
-            ignore_requires_python=ignore_requires_python,
-        )
-
-        return PackageFinder.create(
-            link_collector=link_collector,
-            selection_prefs=selection_prefs,
-            target_python=target_python,
-        )
-
-    def get_available_package_versions(self, options: Values, args: List[Any]) -> None:
+    @staticmethod
+    def get_available_package_versions(finder: IndexVersionsFinder, args: List[Any]) -> None:
         if len(args) != 1:
             raise CommandError('You need to specify exactly one argument')
 
-        target_python = cmdoptions.make_target_python(options)
-        query = args[0]
+        package = args[0]
 
-        with self._build_session(options) as session:
-            finder = self._build_package_finder(
-                options=options,
-                session=session,
-                target_python=target_python,
-                ignore_requires_python=options.ignore_requires_python,
-            )
+        formatted_versions = finder.find_package_versions(package)
+        latest = formatted_versions[0]
 
-            formatted_versions = self._get_versions(finder, options, query)
-            latest = formatted_versions[0]
-
-        write_output('{} ({})'.format(query, latest))
+        write_output('{} ({})'.format(package, latest))
         write_output('Available versions: {}'.format(
             ', '.join(formatted_versions)))
-        print_dist_installation_info(query, latest)
+        print_dist_installation_info(package, latest)
 
-    def get_latest_version(self, options: Values, args: List[Any]) -> None:
+    @staticmethod
+    def get_latest_version(finder: IndexVersionsFinder, args: List[Any]) -> None:
         if not args:
             raise CommandError('You need to specify at least one argument')
 
-        target_python = cmdoptions.make_target_python(options)
-
-        with self._build_session(options) as session:
-            finder = self._build_package_finder(
-                options=options,
-                session=session,
-                target_python=target_python,
-                ignore_requires_python=options.ignore_requires_python,
-            )
-
-            for package in args:
-                formatted_versions = self._get_versions(finder, options, package)
-                latest = formatted_versions[0]
-                write_output('{}=={}'.format(package, latest))
-
-    def _get_versions(self, finder, options, package):
-        versions: Iterable[Union[LegacyVersion, Version]] = (
-            candidate.version
-            for candidate in finder.find_all_candidates(package)
-        )
-
-        if not options.pre:
-            # Remove prereleases
-            versions = (version for version in versions
-                        if not version.is_prerelease)
-        versions = set(versions)
-
-        if not versions:
-            raise DistributionNotFound(
-                'No matching distribution found for {}'.format(package))
-
-        formatted_versions = [str(ver) for ver in sorted(
-            versions, reverse=True)]
-        return formatted_versions
+        for package in args:
+            formatted_versions = finder.find_package_versions(package)
+            latest = formatted_versions[0]
+            write_output('{}=={}'.format(package, latest))
