@@ -26,6 +26,7 @@ class IndexCommand(IndexGroupCommand):
 
     usage = """
         %prog versions <package>
+        %prog latest <packages>
     """
 
     def add_options(self) -> None:
@@ -47,6 +48,7 @@ class IndexCommand(IndexGroupCommand):
     def run(self, options: Values, args: List[Any]) -> int:
         handlers = {
             "versions": self.get_available_package_versions,
+            "latest": self.get_latest_version,
         }
 
         logger.warning(
@@ -75,11 +77,11 @@ class IndexCommand(IndexGroupCommand):
         return SUCCESS
 
     def _build_package_finder(
-        self,
-        options: Values,
-        session: PipSession,
-        target_python: Optional[TargetPython] = None,
-        ignore_requires_python: Optional[bool] = None,
+            self,
+            options: Values,
+            session: PipSession,
+            target_python: Optional[TargetPython] = None,
+            ignore_requires_python: Optional[bool] = None,
     ) -> PackageFinder:
         """
         Create a package finder appropriate to the index command.
@@ -114,26 +116,49 @@ class IndexCommand(IndexGroupCommand):
                 ignore_requires_python=options.ignore_requires_python,
             )
 
-            versions: Iterable[Union[LegacyVersion, Version]] = (
-                candidate.version
-                for candidate in finder.find_all_candidates(query)
-            )
-
-            if not options.pre:
-                # Remove prereleases
-                versions = (version for version in versions
-                            if not version.is_prerelease)
-            versions = set(versions)
-
-            if not versions:
-                raise DistributionNotFound(
-                    'No matching distribution found for {}'.format(query))
-
-            formatted_versions = [str(ver) for ver in sorted(
-                versions, reverse=True)]
+            formatted_versions = self._get_versions(finder, options, query)
             latest = formatted_versions[0]
 
         write_output('{} ({})'.format(query, latest))
         write_output('Available versions: {}'.format(
             ', '.join(formatted_versions)))
         print_dist_installation_info(query, latest)
+
+    def get_latest_version(self, options: Values, args: List[Any]) -> None:
+        if not args:
+            raise CommandError('You need to specify at least one argument')
+
+        target_python = cmdoptions.make_target_python(options)
+
+        with self._build_session(options) as session:
+            finder = self._build_package_finder(
+                options=options,
+                session=session,
+                target_python=target_python,
+                ignore_requires_python=options.ignore_requires_python,
+            )
+
+            for package in args:
+                formatted_versions = self._get_versions(finder, options, package)
+                latest = formatted_versions[0]
+                write_output('{}=={}'.format(package, latest))
+
+    def _get_versions(self, finder, options, package):
+        versions: Iterable[Union[LegacyVersion, Version]] = (
+            candidate.version
+            for candidate in finder.find_all_candidates(package)
+        )
+
+        if not options.pre:
+            # Remove prereleases
+            versions = (version for version in versions
+                        if not version.is_prerelease)
+        versions = set(versions)
+
+        if not versions:
+            raise DistributionNotFound(
+                'No matching distribution found for {}'.format(package))
+
+        formatted_versions = [str(ver) for ver in sorted(
+            versions, reverse=True)]
+        return formatted_versions
